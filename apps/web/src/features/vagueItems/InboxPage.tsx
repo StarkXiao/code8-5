@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   App as AntApp,
+  Alert,
   Badge,
   Button,
   Divider,
@@ -255,7 +256,11 @@ export function InboxPage() {
                     {VAGUE_CATEGORY_LABELS[item.category]}
                   </span>
                   <Tag color={STATUS_COLORS[item.status]}>{VAGUE_STATUS_LABELS[item.status]}</Tag>
+                  {item.step && <Tag color="geekblue">步骤 {item.step.orderIndex + 1}：{item.step.title}</Tag>}
                   {item.assignee && <span>问 {item.assignee.displayName}</span>}
+                  {!item.assignee && item.reopenedFromVerificationId && (
+                    <Tag color="orange">待指派</Tag>
+                  )}
                   <span>{item.createdAt.slice(0, 10)}</span>
                 </div>
                 <p className="froa-item-raw">「{item.rawPhrase}」</p>
@@ -361,6 +366,18 @@ function VagueItemDetail(props: DetailProps) {
 
   return (
     <div className="froa-stack">
+      {item.reopenedFromVerificationId && (
+        <Alert
+          type="warning"
+          showIcon
+          message="这条来自一次失败的复做"
+          description={
+            item.step
+              ? `定位在步骤「${item.step.title}」。复核这一步的结论：确认没问题就重新确认，有问题就按下面的追问继续问。`
+              : '这是整道菜层面的偏差，暂时定位不到具体步骤。可以先追问补充信息，再决定改哪条结论。'
+          }
+        />
+      )}
       <div>
         <div className="froa-item-meta">
           <span className={`froa-tag-cat cat-${item.category}`}>

@@ -613,6 +613,7 @@ versionRouter.get(
         performedByName: run.performer.displayName,
         result: run.result,
         deviations: run.deviations,
+        deviationEntries: run.deviationDetails ? parseJson(run.deviationDetails, []) : [],
       })),
     };
 

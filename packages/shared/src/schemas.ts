@@ -307,19 +307,46 @@ export const createCommentSchema = z.object({
   mentions: z.array(idSchema).max(20).default([]),
 });
 
+/**
+ * 一条结构化偏差：按步骤定位到具体出问题的环节。
+ *
+ * - stepId：偏差发生在哪个步骤（可空 = 整道菜层面的问题，无法定位到步骤）
+ * - category：偏差类型，可空（后端用规则库按描述自动识别）
+ * - assigneeId：这条偏差该追问谁，可空（后端按步骤原声/历史答复自动推荐）
+ */
+export const deviationItemSchema = z.object({
+  stepId: idSchema.nullish(),
+  category: z.enum(VAGUE_CATEGORIES).nullish(),
+  description: z.string().trim().min(2, '请写清这一条偏差').max(500),
+  assigneeId: idSchema.nullish(),
+});
+
 export const createVerificationSchema = z
   .object({
     versionId: idSchema,
     result: z.enum(VERIFICATION_RESULTS),
+    /** 旧式自由文本偏差说明（仍支持，会按句拆分成未定位步骤的条目） */
     deviations: z.string().trim().max(4000).nullish(),
+    /**
+     * 结构化偏差：每条定位到一个具体环节，
+     * 提交后各自生成一条带追问、带指派人的待澄清条目。
+     */
+    deviationItems: z.array(deviationItemSchema).max(20).optional(),
     photoUrls: z.array(z.string().url()).max(20).default([]),
     voiceClipId: idSchema.nullish(),
     performedAt: z.string().datetime().optional(),
   })
-  .refine((v) => v.result === 'success' || (v.deviations && v.deviations.length > 0), {
-    message: '复做失败或部分成功时，必须填写偏差说明',
-    path: ['deviations'],
-  });
+  .refine(
+    (v) =>
+      v.result === 'success' ||
+      ((v.deviations && v.deviations.length > 0) || (v.deviationItems?.length ?? 0) > 0),
+    {
+      message: '复做失败或部分成功时，必须至少填写一条偏差（按步骤逐条填写）',
+      path: ['deviationItems'],
+    },
+  );
+
+export type DeviationItemInput = z.infer<typeof deviationItemSchema>;
 
 export const readNotificationsSchema = z.object({
   ids: z.array(idSchema).max(500).optional(),

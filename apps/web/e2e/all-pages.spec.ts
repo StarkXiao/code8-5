@@ -94,7 +94,7 @@ async function seed(request: APIRequestContext): Promise<Seeded> {
   );
   const draftVersionId = versions[0]!.id;
 
-  await api(request, 'post', `/versions/${draftVersionId}/steps`, {
+  const seedStep = await api<{ id: string }>(request, 'post', `/versions/${draftVersionId}/steps`, {
     token,
     data: {
       title: '炒糖色',
@@ -162,9 +162,17 @@ async function seed(request: APIRequestContext): Promise<Seeded> {
     data: { changeNote: '把口述整理成可复做的第一版' },
   });
 
+  // 一次失败验证：结构化偏差（按步骤、带分类与指派人），会生成"追问中"条目和通知
   await api(request, 'post', `/recipes/${recipe.id}/verifications`, {
     token: elder.tokens.accessToken,
-    data: { versionId: published.id, result: 'fail', deviations: '颜色偏浅，糖放少了。肉有点老。' },
+    data: {
+      versionId: published.id,
+      result: 'fail',
+      deviationItems: [
+        { stepId: seedStep.id, category: 'heat', description: '按中小火炒，糖色一直偏浅不上色', assigneeId: organizer.user.id },
+        { category: 'amount', description: '肉吃起来偏老，收汁可能太久' },
+      ],
+    },
   });
 
   const newDraft = await api<{ id: string }>(request, 'post', `/recipes/${recipe.id}/versions`, {

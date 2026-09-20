@@ -13,11 +13,19 @@ export interface ExportSpec {
   clipLabel: string | null;
 }
 
+export interface ExportDeviation {
+  stepTitle: string | null;
+  category: VagueCategory;
+  description: string;
+  assigneeName: string | null;
+}
+
 export interface ExportVerification {
   performedAt: string;
   performedByName: string;
   result: string;
   deviations: string | null;
+  deviationEntries?: ExportDeviation[];
 }
 
 export interface ExportInput {
@@ -149,16 +157,29 @@ export function renderRecipeMarkdown(input: ExportInput): string {
   if (verifications.length) {
     lines.push('## 复做验证');
     lines.push('');
-    lines.push('| 时间 | 复做人 | 结果 | 偏差 |');
-    lines.push('| --- | --- | --- | --- |');
     for (const run of verifications) {
-      lines.push(
-        `| ${run.performedAt.slice(0, 10)} | ${run.performedByName} | ${
-          RESULT_LABELS[run.result] ?? run.result
-        } | ${run.deviations ?? '—'} |`,
-      );
+      const head = `${run.performedAt.slice(0, 10)} · ${run.performedByName} · ${
+        RESULT_LABELS[run.result] ?? run.result
+      }`;
+      lines.push(`### ${head}`);
+      lines.push('');
+
+      if (run.deviationEntries?.length) {
+        // 结构化偏差：按步骤列出"哪个环节、什么问题、追问了谁"
+        for (const entry of run.deviationEntries) {
+          const where = entry.stepTitle ? `步骤「${entry.stepTitle}」` : '整道菜';
+          const who = entry.assigneeName ? ` → 已追问 ${entry.assigneeName}` : '';
+          lines.push(
+            `- ${where} · ${VAGUE_CATEGORY_LABELS[entry.category] ?? entry.category}：${entry.description}${who}`,
+          );
+        }
+      } else if (run.deviations) {
+        lines.push(run.deviations);
+      } else {
+        lines.push('_无偏差_');
+      }
+      lines.push('');
     }
-    lines.push('');
   }
 
   if (version.changeNote) {

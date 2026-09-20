@@ -235,6 +235,22 @@ export interface CommentDto {
   author?: Pick<UserDto, 'id' | 'displayName' | 'avatarUrl'>;
 }
 
+/** 复做失败时按步骤记录的一条结构化偏差 */
+export interface DeviationEntry {
+  stepId: string | null;
+  stepTitle: string | null;
+  stepOrder: number | null;
+  category: VagueCategory;
+  description: string;
+  assigneeId: string | null;
+  assigneeName: string | null;
+  /** 由这条偏差生成的待澄清条目 */
+  vagueItemId: string;
+  /** 分类/指派人是系统自动推断的，还是提交人显式选择的 */
+  categoryAuto: boolean;
+  assigneeAuto: boolean;
+}
+
 export interface VerificationRunDto {
   id: string;
   recipeId: string;
@@ -243,6 +259,8 @@ export interface VerificationRunDto {
   performedAt: string;
   result: VerificationResult;
   deviations: string | null;
+  /** 结构化偏差明细（旧记录只有 deviations 文本时为空数组） */
+  deviationEntries: DeviationEntry[];
   photoUrls: string[];
   voiceClipId: string | null;
   createdAt: string;

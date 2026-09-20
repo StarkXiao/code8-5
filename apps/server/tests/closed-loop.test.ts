@@ -524,4 +524,313 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
     expect(record?.deletedAt).not.toBeNull();
     expect(record?.sha256).toHaveLength(64);
   });
+
+  /* ---------------------------------------------------------------- */
+  /* 结构化偏差：按步骤定位 -> 自动识别分类 -> 自动转追问并指派        */
+  /* ---------------------------------------------------------------- */
+
+  it('20. 结构化偏差按步骤生成"追问中"条目，并自动指派给该步骤的答复人', async () => {
+    // 准备一张新食谱 + 一个带原声的步骤 + 一条由 elder 答复并已发布的结论
+    const r = await request(app)
+      .post('/api/recipes')
+      .set(auth(organizer))
+      .send({ workspaceId, title: '外婆的糖醋排骨' })
+      .expect(201);
+    const structuredRecipeId = r.body.data.id as string;
+
+    const v = await request(app)
+      .get(`/api/recipes/${structuredRecipeId}/versions`)
+      .set(auth(organizer))
+      .expect(200);
+    const structuredVersionId = v.body.data[0].id as string;
+
+    const stepAudio = await uploadAudio(elder, structuredRecipeId, 'recipe_voice');
+    const stepClip = await request(app)
+      .post(`/api/audio/${stepAudio}/clips`)
+      .set(auth(elder))
+      .send({ startMs: 0, endMs: 900, label: '外婆讲炒糖色' })
+      .expect(201);
+
+    const step = await request(app)
+      .post(`/api/versions/${structuredVersionId}/steps`)
+      .set(auth(organizer))
+      .send({
+        title: '炒糖色',
+        instruction: '中火炒糖到枣红色',
+        heatLevel: 'medium',
+        sourceClipId: stepClip.body.data.id,
+      })
+      .expect(201);
+    const stepId = step.body.data.id as string;
+
+    const item = await request(app)
+      .post(`/api/recipes/${structuredRecipeId}/vague-items`)
+      .set(auth(organizer))
+      .send({
+        category: 'heat',
+        rawPhrase: '中火炒到枣红色',
+        clipId: stepClip.body.data.id,
+        stepId,
+        versionId: structuredVersionId,
+      })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/vague-items/${item.body.data.id}/answer`)
+      .set(auth(elder))
+      .send({ answerText: '火苗到锅底第二圈，看到枣红色就下肉' })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/vague-items/${item.body.data.id}/resolve`)
+      .set(auth(organizer))
+      .send({
+        resolvedSpec: {
+          type: 'heat',
+          criterion: '枣红色、火苗到锅底第二圈',
+          confidence: 'confirmed',
+          evidence: { clipId: stepClip.body.data.id, answeredBy: elder.userId },
+        },
+      })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/versions/${structuredVersionId}/submit`)
+      .set(auth(organizer))
+      .expect(200);
+    await request(app)
+      .post(`/api/versions/${structuredVersionId}/publish`)
+      .set(auth(organizer))
+      .send({ changeNote: '结构化偏差测试的首版发布' })
+      .expect(200);
+
+    // 复做人由 organizer 担任，elder 是被追问对象 —— 不能自问自答
+    const failure = await request(app)
+      .post(`/api/recipes/${structuredRecipeId}/verifications`)
+      .set(auth(organizer))
+      .send({
+        versionId: structuredVersionId,
+        result: 'fail',
+        deviationItems: [
+          {
+            stepId,
+            // 故意不填 category，验证自动识别
+            description: '按中火炒，糖一直不上色，还没炒到枣红色就结块了',
+          },
+          // 整道菜层面、无法定位步骤的偏差
+          { category: 'amount', description: '整道菜偏甜，糖的总量可能多了' },
+        ],
+      })
+      .expect(201);
+
+    const entries = failure.body.data.deviationEntries as {
+      stepId: string | null;
+      stepTitle: string | null;
+      category: string;
+      description: string;
+      assigneeId: string | null;
+      assigneeName: string | null;
+      vagueItemId: string;
+      categoryAuto: boolean;
+      assigneeAuto: boolean;
+    }[];
+
+    expect(entries).toHaveLength(2);
+
+    const onStep = entries.find((entry) => entry.stepId === stepId)!;
+    expect(onStep.stepTitle).toBe('炒糖色');
+    // "中火"命中火候规则
+    expect(onStep.category).toBe('heat');
+    expect(onStep.categoryAuto).toBe(true);
+    // 自动指派给这一步上次的答复人 / 原声提供者 elder
+    expect(onStep.assigneeId).toBe(elder.userId);
+    expect(onStep.assigneeName).toBe('外婆');
+    expect(onStep.assigneeAuto).toBe(true);
+    expect(onStep.vagueItemId).toBeTruthy();
+
+    // 生成的条目直接是"追问中"，追问话术带着步骤名与偏差描述
+    const generated = await request(app)
+      .get(`/api/vague-items/${onStep.vagueItemId}`)
+      .set(auth(organizer))
+      .expect(200);
+    expect(generated.body.data.status).toBe('asked');
+    expect(generated.body.data.assigneeId).toBe(elder.userId);
+    expect(generated.body.data.stepId).toBe(stepId);
+    expect(generated.body.data.question).toContain('炒糖色');
+    expect(generated.body.data.question).toContain('不上色');
+    expect(generated.body.data.reopenedFromVerificationId).toBe(failure.body.data.id);
+
+    // 被自动指派的人收到 assigned 通知，通知能追溯到那次验证
+    const elderNotifications = await request(app)
+      .get('/api/notifications')
+      .set(auth(elder))
+      .expect(200);
+    const assigned = elderNotifications.body.data.find(
+      (n: { type: string; payload?: { verificationId?: string } }) =>
+        n.type === 'assigned' && n.payload?.verificationId === failure.body.data.id,
+    );
+    expect(assigned).toBeTruthy();
+
+    // 受影响步骤上的旧结论被降级为"暂定"，无法定位步骤的偏差也会触发全量降级
+    const degraded = await request(app)
+      .get(`/api/vague-items/${item.body.data.id}`)
+      .set(auth(organizer))
+      .expect(200);
+    expect(degraded.body.data.status).toBe('resolved');
+    expect(degraded.body.data.confidence).toBe('assumed');
+  });
+
+  it('21. 只降级出偏差步骤的结论，其他步骤的结论不受牵连', async () => {
+    const r = await request(app)
+      .post('/api/recipes')
+      .set(auth(organizer))
+      .send({ workspaceId, title: '外婆的清蒸鱼' })
+      .expect(201);
+    const localRecipeId = r.body.data.id as string;
+    const v = await request(app)
+      .get(`/api/recipes/${localRecipeId}/versions`)
+      .set(auth(organizer))
+      .expect(200);
+    const localVersionId = v.body.data[0].id as string;
+
+    async function makeStep(title: string) {
+      const response = await request(app)
+        .post(`/api/versions/${localVersionId}/steps`)
+        .set(auth(organizer))
+        .send({ title, instruction: `${title}的描述` })
+        .expect(201);
+      return response.body.data.id as string;
+    }
+    const badStepId = await makeStep('第一步 腌制');
+    const goodStepId = await makeStep('第二步 上锅蒸');
+
+    async function makeResolvedItem(rawPhrase: string, stepId: string) {
+      const created = await request(app)
+        .post(`/api/recipes/${localRecipeId}/vague-items`)
+        .set(auth(organizer))
+        .send({ category: 'other', rawPhrase, stepId, versionId: localVersionId })
+        .expect(201);
+      await request(app)
+        .post(`/api/vague-items/${created.body.data.id}/answer`)
+        .set(auth(elder))
+        .send({ answerText: '知道了' })
+        .expect(200);
+      await request(app)
+        .post(`/api/vague-items/${created.body.data.id}/resolve`)
+        .set(auth(organizer))
+        .send({
+          resolvedSpec: {
+            type: 'other',
+            criterion: rawPhrase,
+            confidence: 'confirmed',
+            evidence: { answeredBy: elder.userId },
+          },
+        })
+        .expect(200);
+      return created.body.data.id as string;
+    }
+
+    const badItemId = await makeResolvedItem('腌十分钟', badStepId);
+    const goodItemId = await makeResolvedItem('蒸八分钟', goodStepId);
+
+    await request(app)
+      .post(`/api/versions/${localVersionId}/submit`)
+      .set(auth(organizer))
+      .expect(200);
+    await request(app)
+      .post(`/api/versions/${localVersionId}/publish`)
+      .set(auth(organizer))
+      .send({ changeNote: '清蒸鱼首版' })
+      .expect(200);
+
+    // 只有第一步出偏差，且明确指派给 organizer（显式指派）
+    const failure = await request(app)
+      .post(`/api/recipes/${localRecipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId: localVersionId,
+        result: 'partial',
+        deviationItems: [
+          { stepId: badStepId, category: 'time', description: '腌了十分钟根本不入味', assigneeId: organizer.userId },
+        ],
+      })
+      .expect(201);
+
+    expect(failure.body.data.deviationEntries[0].assigneeId).toBe(organizer.userId);
+    expect(failure.body.data.deviationEntries[0].assigneeAuto).toBe(false);
+
+    const badItem = await request(app)
+      .get(`/api/vague-items/${badItemId}`)
+      .set(auth(organizer))
+      .expect(200);
+    const goodItem = await request(app)
+      .get(`/api/vague-items/${goodItemId}`)
+      .set(auth(organizer))
+      .expect(200);
+
+    expect(badItem.body.data.confidence).toBe('assumed');
+    // 没出偏差的步骤，结论维持"已确认"
+    expect(goodItem.body.data.confidence).toBe('confirmed');
+  });
+
+  it('22. 偏差不能定位到别的版本的步骤，也不能指派给空间外的人', async () => {
+    // 新建一张食谱，拿一个外版本的步骤 id
+    const other = await request(app)
+      .post('/api/recipes')
+      .set(auth(organizer))
+      .send({ workspaceId, title: '别的菜' })
+      .expect(201);
+    const otherVersionId = (
+      await request(app)
+        .get(`/api/recipes/${other.body.data.id}/versions`)
+        .set(auth(organizer))
+        .expect(200)
+    ).body.data[0].id as string;
+    const foreignStep = await request(app)
+      .post(`/api/versions/${otherVersionId}/steps`)
+      .set(auth(organizer))
+      .send({ title: '别人家的步骤', instruction: 'x' })
+      .expect(201);
+
+    const outsider = await register('outsider2@e2e.test', '路人乙');
+
+    const badStep = await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId,
+        result: 'fail',
+        deviationItems: [{ stepId: foreignStep.body.data.id, description: '挂到别的版本的步骤上' }],
+      })
+      .expect(400);
+    expect(badStep.body.error.code).toBe('VALIDATION_FAILED');
+
+    const badAssignee = await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId,
+        result: 'fail',
+        deviationItems: [{ description: '指派给外人', assigneeId: outsider.userId }],
+      })
+      .expect(400);
+    expect(badAssignee.body.error.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('23. 失败但一条偏差都没填仍然被拒绝；成功无需偏差', async () => {
+    const rejected = await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({ versionId, result: 'fail', deviationItems: [] })
+      .expect(400);
+    expect(rejected.body.error.code).toBe('VALIDATION_FAILED');
+
+    // 空描述的偏差条目会被过滤，等同于没填
+    const rejectedBlank = await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({ versionId, result: 'fail', deviationItems: [{ description: '  ' }] })
+      .expect(400);
+    expect(rejectedBlank.body.error.code).toBe('VALIDATION_FAILED');
+  });
 });

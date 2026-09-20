@@ -3,6 +3,7 @@ import type {
   AudioAttachmentDto,
   AudioClipDto,
   CommentDto,
+  DeviationEntry,
   IngredientDto,
   KitchenReferenceDto,
   NotificationDto,
@@ -323,6 +324,7 @@ export function toVerificationDto(run: {
   performedAt: Date;
   result: string;
   deviations: string | null;
+  deviationDetails?: string | null;
   photoUrls: string | null;
   voiceClipId: string | null;
   createdAt: Date;
@@ -337,6 +339,10 @@ export function toVerificationDto(run: {
     performedAt: run.performedAt.toISOString(),
     result: run.result as VerificationResult,
     deviations: run.deviations,
+    deviationEntries:
+      run.deviationDetails != null
+        ? parseJson<DeviationEntry[]>(run.deviationDetails, []) ?? []
+        : [],
     photoUrls: parseJsonArray(run.photoUrls),
     voiceClipId: run.voiceClipId,
     createdAt: run.createdAt.toISOString(),

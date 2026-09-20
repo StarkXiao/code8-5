@@ -325,6 +325,8 @@ model VerificationRun {
   performedAt DateTime @default(now())
   result      String
   deviations  String?
+  /// JSON：DeviationEntry[] —— 按步骤定位的结构化偏差
+  deviationDetails String?
   /// JSON 字符串数组
   photoUrls   String?
   voiceClipId String?
