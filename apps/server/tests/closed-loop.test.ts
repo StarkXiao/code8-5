@@ -73,17 +73,20 @@ async function uploadAudio(session: Session, recipeId: string, kind: string): Pr
 describe('主闭环：从一句模糊口述到一条已验证的可复做结论', () => {
   let organizer: Session;
   let elder: Session;
+  let aunt: Session;
   let workspaceId = '';
   let recipeId = '';
   let versionId = '';
   let audioId = '';
   let clipId = '';
   let itemId = '';
+  let stepId = '';
   let failedVersionId = '';
 
   beforeAll(async () => {
     organizer = await register('organizer@e2e.test', '整理者');
     elder = await register('elder@e2e.test', '外婆');
+    aunt = await register('aunt@e2e.test', '姑姑');
   });
 
   afterAll(async () => {
@@ -106,12 +109,18 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
       .send({ inviteCode: ws.body.data.inviteCode })
       .expect(201);
 
+    await request(app)
+      .post('/api/workspaces/join')
+      .set(auth(aunt))
+      .send({ inviteCode: ws.body.data.inviteCode })
+      .expect(201);
+
     const members = await request(app)
       .get(`/api/workspaces/${workspaceId}/members`)
       .set(auth(organizer))
       .expect(200);
 
-    expect(members.body.data).toHaveLength(2);
+    expect(members.body.data).toHaveLength(3);
   });
 
   it('2. 新建食谱时自动生成 v1 草稿（不留空状态）', async () => {
@@ -300,6 +309,14 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
   });
 
   it('10. 提交并发布版本 —— 没有变更说明无法发布', async () => {
+    // 补一个正式步骤：后面的复做偏差要定位到具体环节
+    const step = await request(app)
+      .post(`/api/versions/${versionId}/steps`)
+      .set(auth(organizer))
+      .send({ title: '炒糖色', instruction: '放糖后中火炒到枣红色，立刻下肉' })
+      .expect(201);
+    stepId = step.body.data.id;
+
     await request(app).post(`/api/versions/${versionId}/submit`).set(auth(organizer)).expect(200);
 
     const noNote = await request(app)
@@ -333,29 +350,155 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
       .expect(409);
   });
 
-  it('12. 他人复做失败 -> 自动生成新的待澄清条目并打回', async () => {
+  it('12. 他人复做失败 -> 每条偏差定位到步骤、自动归类、生成追问并指派', async () => {
     const failure = await request(app)
       .post(`/api/recipes/${recipeId}/verifications`)
       .set(auth(elder))
       .send({
         versionId,
         result: 'fail',
-        deviations: '颜色偏浅，糖放少了。收汁时间太长，肉有点老。',
+        deviationItems: [
+          {
+            text: '按食谱炒出来颜色偏浅，糖放少了',
+            stepId,
+            category: 'amount',
+            assigneeId: aunt.userId,
+          },
+          {
+            // 不指定分类：服务端应按关键词归到 time；不指定人：应自动指派
+            text: '收汁时间太长，肉有点老',
+          },
+        ],
       })
       .expect(201);
 
-    const reopened: string[] = failure.body.data.reopenedItemIds;
-    expect(reopened.length).toBeGreaterThanOrEqual(2);
+    const reopened = failure.body.data.reopenedItems as Array<{
+      id: string;
+      rawPhrase: string;
+      category: string;
+      status: string;
+      question: string;
+      assigneeId: string | null;
+      assigneeName: string | null;
+      stepId: string | null;
+      stepTitle: string | null;
+      stepOrder: number | null;
+      autoAssigned: boolean;
+    }>;
 
-    const items = await request(app)
+    expect(reopened).toHaveLength(2);
+
+    const amountDeviation = reopened[0]!;
+    const timeDeviation = reopened[1]!;
+
+    // 第一条：显式步骤 + 显式分类 + 显式指派
+    expect(amountDeviation.category).toBe('amount');
+    expect(amountDeviation.status).toBe('asked');
+    expect(amountDeviation.stepId).toBe(stepId);
+    expect(amountDeviation.stepTitle).toBe('炒糖色');
+    expect(amountDeviation.stepOrder).toBe(1);
+    expect(amountDeviation.assigneeId).toBe(aunt.userId);
+    expect(amountDeviation.autoAssigned).toBe(false);
+    // 追问必须带着步骤与具体现象，不是一句干巴巴的模板
+    expect(amountDeviation.question).toContain('炒糖色');
+    expect(amountDeviation.question).toContain('糖放少了');
+    expect(amountDeviation.question).toContain('几克');
+
+    // 第二条：关键词自动归类到"时间"
+    expect(timeDeviation.category).toBe('time');
+    expect(timeDeviation.question).toContain('多久');
+
+    // 自动指派：没人显式指定时，条目仍然有责任人（本空间成员）
+    if (timeDeviation.assigneeId) {
+      expect(timeDeviation.autoAssigned).toBe(true);
+    }
+
+    // 落库条目状态是 asked（追问已自动发出），并能追溯回那次验证
+    const asked = await request(app)
       .get(`/api/recipes/${recipeId}/vague-items`)
-      .query({ status: 'open' })
+      .query({ status: 'asked' })
       .set(auth(organizer))
       .expect(200);
+    const ids = asked.body.data.map((i: { id: string }) => i.id);
+    expect(ids).toContain(amountDeviation.id);
+    expect(ids).toContain(timeDeviation.id);
+    for (const item of asked.body.data as Array<{ reopenedFromVerificationId: string }>) {
+      if (ids.includes(amountDeviation.id) || ids.includes(timeDeviation.id)) {
+        expect(item.reopenedFromVerificationId).toBe(failure.body.data.id);
+      }
+    }
 
-    expect(items.body.data.length).toBe(reopened.length);
-    // 失败反馈生成的条目必须能追溯回那次验证
-    expect(items.body.data[0].reopenedFromVerificationId).toBe(failure.body.data.id);
+    // 被显式指派的姑姑收到一条 assigned 通知，且不是广播型通知
+    const auntNotifications = await request(app)
+      .get('/api/notifications')
+      .query({ unread: 'true' })
+      .set(auth(aunt))
+      .expect(200);
+    const assigned = auntNotifications.body.data.find(
+      (n: { type: string }) => n.type === 'assigned',
+    );
+    expect(assigned).toBeTruthy();
+    expect(assigned.payload.message).toContain('糖放少了');
+  });
+
+  it('12b. 偏差不能定位到别的版本的步骤，也不能指派给空间外的人', async () => {
+    // 另建一张食谱拿到"外版本"的步骤 id
+    const otherRecipe = await request(app)
+      .post('/api/recipes')
+      .set(auth(organizer))
+      .send({ workspaceId, title: '别人家的菜' })
+      .expect(201);
+    const otherDraft = (
+      await request(app)
+        .get(`/api/recipes/${otherRecipe.body.data.id}/versions`)
+        .set(auth(organizer))
+        .expect(200)
+    ).body.data[0].id;
+    const foreignStep = (
+      await request(app)
+        .post(`/api/versions/${otherDraft}/steps`)
+        .set(auth(organizer))
+        .send({ title: '外来步骤', instruction: '不属于本食谱' })
+        .expect(201)
+    ).body.data.id;
+
+    await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId,
+        result: 'fail',
+        deviationItems: [{ text: '挂到别的菜的步骤上', stepId: foreignStep }],
+      })
+      .expect(400);
+
+    const outsider = await register('intruder@e2e.test', '路人');
+    await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId,
+        result: 'fail',
+        deviationItems: [{ text: '问一个不在空间里的人', assigneeId: outsider.userId }],
+      })
+      .expect(400);
+  });
+
+  it('12c. 旧客户端只传 deviations 整段文本仍然可用（按句拆分 + 自动归类）', async () => {
+    const legacy = await request(app)
+      .post(`/api/recipes/${recipeId}/verifications`)
+      .set(auth(elder))
+      .send({
+        versionId,
+        result: 'partial',
+        deviations: '盐好像有点多。',
+      })
+      .expect(201);
+
+    expect(legacy.body.data.reopenedItems).toHaveLength(1);
+    expect(legacy.body.data.reopenedItems[0]!.category).toBe('amount');
+    // 历史记录里保留整段文本快照
+    expect(legacy.body.data.deviations).toContain('盐好像有点多');
   });
 
   it('13. 复做失败时缺少偏差说明会被拒绝', async () => {
@@ -387,7 +530,7 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
 
     const openItems = await request(app)
       .get(`/api/recipes/${recipeId}/vague-items`)
-      .query({ status: 'open' })
+      .query({ status: 'asked' })
       .set(auth(organizer))
       .expect(200);
 

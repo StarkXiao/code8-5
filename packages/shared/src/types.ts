@@ -242,12 +242,31 @@ export interface VerificationRunDto {
   performedBy: string;
   performedAt: string;
   result: VerificationResult;
+  /** 旧格式整段文本；结构化提交时为各条偏差按行拼接的快照 */
   deviations: string | null;
   photoUrls: string[];
   voiceClipId: string | null;
   createdAt: string;
   reopenedItemIds?: string[];
+  /** 打回生成的追问条目详情：定位到哪一步、问了谁、是不是自动指派 */
+  reopenedItems?: ReopenedDeviationDto[];
   performer?: Pick<UserDto, 'id' | 'displayName' | 'avatarUrl'>;
+}
+
+/** 复做偏差被转成的待澄清追问条目（创建验证接口的回执用） */
+export interface ReopenedDeviationDto {
+  id: string;
+  rawPhrase: string;
+  category: VagueCategory;
+  status: VagueStatus;
+  question: string | null;
+  assigneeId: string | null;
+  assigneeName?: string | null;
+  stepId: string | null;
+  stepTitle?: string | null;
+  stepOrder?: number | null;
+  /** true = 没有显式指定，由系统按"结论答复人 / 最熟的人"指派（仅创建回执保证返回） */
+  autoAssigned?: boolean;
 }
 
 export interface NotificationDto {

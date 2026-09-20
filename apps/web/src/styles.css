@@ -349,6 +349,15 @@ a {
   border-left-color: var(--froa-time);
 }
 
+.froa-deviation-row {
+  border: 1px dashed var(--froa-border);
+  background: var(--froa-surface);
+}
+
+.froa-deviation-row .ant-card-body {
+  padding: 0.75rem 0.9rem;
+}
+
 .froa-item-raw {
   font-size: 1.05rem;
   font-weight: 600;

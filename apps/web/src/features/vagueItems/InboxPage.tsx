@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   App as AntApp,
+  Alert,
   Badge,
   Button,
   Divider,
@@ -255,6 +256,7 @@ export function InboxPage() {
                     {VAGUE_CATEGORY_LABELS[item.category]}
                   </span>
                   <Tag color={STATUS_COLORS[item.status]}>{VAGUE_STATUS_LABELS[item.status]}</Tag>
+                  {item.step && <Tag color="geekblue">第 {item.step.orderIndex + 1} 步 · {item.step.title}</Tag>}
                   {item.assignee && <span>问 {item.assignee.displayName}</span>}
                   <span>{item.createdAt.slice(0, 10)}</span>
                 </div>
@@ -367,9 +369,21 @@ function VagueItemDetail(props: DetailProps) {
             {VAGUE_CATEGORY_LABELS[item.category]}
           </span>
           <Tag color={STATUS_COLORS[item.status]}>{VAGUE_STATUS_LABELS[item.status]}</Tag>
+          {item.step && <Tag color="geekblue">第 {item.step.orderIndex + 1} 步 · {item.step.title}</Tag>}
         </div>
         <h2 style={{ margin: '0.5rem 0' }}>「{item.rawPhrase}」</h2>
-        {item.transcript && <Typography.Paragraph type="secondary">{item.transcript}</Typography.Paragraph>}
+        {item.reopenedFromVerificationId && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message="这条来自一次复做偏差"
+            description={item.transcript ?? '上次有人照着做没做对，整理者需要重新核对后再发布。'}
+          />
+        )}
+        {item.transcript && !item.reopenedFromVerificationId && (
+          <Typography.Paragraph type="secondary">{item.transcript}</Typography.Paragraph>
+        )}
       </div>
 
       {/* 原声：整个流程的证据锚点 */}

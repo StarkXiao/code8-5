@@ -8,6 +8,7 @@ import type {
   NotificationDto,
   RecipeDto,
   RecipeVersionDto,
+  ReopenedDeviationDto,
   ResolvedSpec,
   StepDto,
   UserDto,
@@ -326,9 +327,12 @@ export function toVerificationDto(run: {
   photoUrls: string | null;
   voiceClipId: string | null;
   createdAt: Date;
-  reopenedItems?: { id: string }[];
+  reopenedItems?: Array<{ id: string } | ReopenedDeviationDto>;
   performer?: { id: string; displayName: string; avatarUrl: string | null } | null;
 }): VerificationRunDto {
+  const reopenedItems = (run.reopenedItems ?? []) as Array<{ id: string } & Partial<ReopenedDeviationDto>>;
+  const richItems = reopenedItems.filter((item): item is ReopenedDeviationDto => item.rawPhrase !== undefined);
+
   return {
     id: run.id,
     recipeId: run.recipeId,
@@ -340,7 +344,8 @@ export function toVerificationDto(run: {
     photoUrls: parseJsonArray(run.photoUrls),
     voiceClipId: run.voiceClipId,
     createdAt: run.createdAt.toISOString(),
-    ...(run.reopenedItems ? { reopenedItemIds: run.reopenedItems.map((item) => item.id) } : {}),
+    ...(reopenedItems.length ? { reopenedItemIds: reopenedItems.map((item) => item.id) } : {}),
+    ...(richItems.length ? { reopenedItems: richItems } : {}),
     ...(run.performer ? { performer: toUserBrief(run.performer) } : {}),
   };
 }
